@@ -22,7 +22,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 > 🎙️ **Offline Dubbing** · Process a video fully locally after model setup, or explicitly choose Colab or Modal.
 >
-> ⚡ **Live Dubbing — experimental** · Capture an authorized YouTube stream or supported video with Local or Colab inference.
+> ⚡ **Live Dubbing — experimental** · Capture an authorized YouTube stream or supported video with Local or Colab inference. [Set up Live Dubbing →](docs/LIVE_DUBBING_SETUP.md#pair-and-start-a-session)
 
 ## News
 
@@ -30,7 +30,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 ## Live Dubbing — YouTube Live Broadcast Demo
 
-⚡ **Experimental Live Dubbing** · Watch the complete workflow on an authorized YouTube live broadcast. Delay varies; capture requires explicit browser permissions and pairing. [Set up Live Dubbing →](docs/LIVE_DUBBING_SETUP.md#pair-and-start-a-session)
+⚡ **Experimental Live Dubbing** · Watch the complete workflow on an authorized YouTube live broadcast. Delay varies; capture requires explicit browser permissions and pairing.
 
 https://github.com/user-attachments/assets/e2cd7707-a5b7-4a77-b4f8-8c5cd200039c
 
