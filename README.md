@@ -30,7 +30,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 A cinematic introduction to VoxaDub, featuring speaker-aware multilingual dubbing, duration-aware synchronization, optional lip-sync, and experimental Live Dubbing.
 
-https://github.com/user-attachments/assets/4c63893c-1afe-4a72-99c0-45899a270434
+https://github.com/user-attachments/assets/eb52e54c-87d5-43e5-be18-5621a0ecffe4
 
 ## News
 
