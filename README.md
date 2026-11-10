@@ -14,7 +14,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 🌟 Listed in [OpenBMB/VoxCPM](https://github.com/OpenBMB/VoxCPM) — **Ecosystem & Community** · [PR #389](https://github.com/OpenBMB/VoxCPM/pull/389)
 
-[🎬 Watch the film](#official-product-film) · [Features](#key-features) · [Quick Start](#quick-start) · [Documentation](docs/PIPELINE_ARCHITECTURE.md) · [v0.1.0 release](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0)
+[🎬 Watch the film](#voxadub-the-voice-shift) · [Features](#key-features) · [Quick Start](#quick-start) · [Documentation](docs/PIPELINE_ARCHITECTURE.md) · [v0.1.0 release](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0)
 
 </div>
 
@@ -24,7 +24,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 >
 > ⚡ **Live Dubbing — experimental** · Capture an authorized YouTube stream or supported video with Local or Colab inference. [Set up Live Dubbing →](docs/LIVE_DUBBING_SETUP.md#pair-and-start-a-session)
 
-## Official Product Film
+## VoxaDub: The Voice Shift
 
 **Their Voices. Your Language.**
 

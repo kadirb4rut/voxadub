@@ -15,7 +15,7 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn("assets/branding/voxadub-banner.png", readme)
         self.assertIn("fully local", readme.lower())
         self.assertIn("## Offline Dubbing — Multilingual Demo", readme)
-        self.assertIn("## Live Dubbing — YouTube Live Broadcast Demo", readme)
+        self.assertIn("## VoxaDub: The Voice Shift", readme)
         self.assertIn("# Quick Start", readme)
         self.assertIn("scripts/create_demo_comparison.sh", readme)
         self.assertIn("timing-group", readme)
