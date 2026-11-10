@@ -14,7 +14,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 🌟 Listed in [OpenBMB/VoxCPM](https://github.com/OpenBMB/VoxCPM) — **Ecosystem & Community** · [PR #389](https://github.com/OpenBMB/VoxCPM/pull/389)
 
-[🎬 Watch the demos](#live-dubbing--youtube-live-broadcast-demo) · [Features](#key-features) · [Quick Start](#quick-start) · [Documentation](docs/PIPELINE_ARCHITECTURE.md) · [v0.1.0 release](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0)
+[🎬 Watch the film](#voxadub-the-voice-shift) · [Features](#key-features) · [Quick Start](#quick-start) · [Documentation](docs/PIPELINE_ARCHITECTURE.md) · [v0.1.0 release](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0)
 
 </div>
 
@@ -22,17 +22,19 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 
 > 🎙️ **Offline Dubbing** · Process a video fully locally after model setup, or explicitly choose Colab or Modal.
 >
-> ⚡ **Live Dubbing — experimental** · Capture an authorized YouTube stream or supported video with Local or Colab inference.
+> ⚡ **Live Dubbing — experimental** · Capture an authorized YouTube stream or supported video with Local or Colab inference. [Set up Live Dubbing →](docs/LIVE_DUBBING_SETUP.md#pair-and-start-a-session)
+
+## VoxaDub: The Voice Shift
+
+**Their Voices. Your Language.**
+
+A cinematic introduction to VoxaDub, featuring speaker-aware multilingual dubbing, duration-aware synchronization, optional lip-sync, and experimental Live Dubbing.
+
+https://github.com/user-attachments/assets/4c63893c-1afe-4a72-99c0-45899a270434
 
 ## News
 
 🚀 **2026-11-03 · [VoxaDub v0.1.0](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0)** — Experimental Live/VOD dubbing, Hy-MT2 translation, speaker-aware voices, timing safeguards, and new GUI and compute workflows. [Release notes](https://github.com/kadirb4rut/voxadub/releases/tag/v0.1.0) · [Changelog](CHANGELOG.md)
-
-## Live Dubbing — YouTube Live Broadcast Demo
-
-⚡ **Experimental Live Dubbing** · Watch the complete workflow on an authorized YouTube live broadcast. Delay varies; capture requires explicit browser permissions and pairing. [Set up Live Dubbing →](docs/LIVE_DUBBING_SETUP.md#pair-and-start-a-session)
-
-https://github.com/user-attachments/assets/e2cd7707-a5b7-4a77-b4f8-8c5cd200039c
 
 ## Offline Dubbing — Multilingual Demo
 
