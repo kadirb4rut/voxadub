@@ -1,4 +1,4 @@
-"""Rebuild the audio on the source timeline when a group keeps its original sound."""
+"""Rebuild audio on the original picture timeline."""
 
 from pathlib import Path
 
@@ -35,9 +35,9 @@ def _source_intervals(groups, fallback_indices, total_frames):
     return intervals
 
 
-def render_with_source_audio(
-    video, background, groups, fallback_indices, duration, wav_dir, workspace,
-    destination, *, ffmpeg, run, probe_duration, min_tempo, max_tempo,
+def render_on_source_timeline(
+    video, original_audio, background, groups, fallback_indices, duration, wav_dir,
+    workspace, destination, *, ffmpeg, run, probe_duration, min_tempo, max_tempo,
 ):
     """Mux dubbed speech and source windows without moving any picture or onset."""
     import soundfile as sf
@@ -69,27 +69,35 @@ def render_with_source_audio(
                     out.write(block)
         _write_constant(out, total_frames - out.tell(), 0.0)
 
-    with sf.SoundFile(mask, "w", SAMPLE_RATE, 1, subtype="FLOAT") as out:
-        for start, end in _source_intervals(groups, fallback_indices, total_frames):
-            _write_constant(out, start - out.tell(), 0.0)
-            # PCM16's largest positive sample is just below 1. Use float WAV
-            # for the gain mask so source intervals completely suppress the dub.
-            _write_constant(out, end - start, 1.0)
-        _write_constant(out, total_frames - out.tell(), 0.0)
-
     stereo = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+    inputs = ["-i", video, "-i", speech, "-i", background]
+    filters = [
+        f"[1:a]{stereo},loudnorm=I=-20:TP=-2:LRA=11,aresample=48000,apad[dub]",
+        f"[2:a]{stereo},volume=0.35,apad[bg]",
+        "[dub][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]",
+    ]
+    audio_output = "[mix]"
+    if fallback_indices:
+        # Float WAV represents both ends of the gain mask exactly.
+        with sf.SoundFile(mask, "w", SAMPLE_RATE, 1, subtype="FLOAT") as out:
+            for start, end in _source_intervals(groups, fallback_indices, total_frames):
+                _write_constant(out, start - out.tell(), 0.0)
+                _write_constant(out, end - start, 1.0)
+            _write_constant(out, total_frames - out.tell(), 0.0)
+        inputs.extend(["-i", mask, "-i", original_audio])
+        filters.extend([
+            f"[4:a]{stereo},apad[original]",
+            f"[3:a]pan=stereo|c0=c0|c1=c0,{stereo},asplit[keep][inverse]",
+            "[inverse]aeval=1-val(0)|1-val(1)[replace]",
+            "[mix][replace]amultiply[dub_window]",
+            "[original][keep]amultiply[source_window]",
+            "[dub_window][source_window]amix=inputs=2:duration=first:normalize=0[a]",
+        ])
+        audio_output = "[a]"
+
     run([
-        ffmpeg, "-y", "-i", video, "-i", speech, "-i", background, "-i", mask,
-        "-filter_complex",
-        f"[1:a]{stereo},loudnorm=I=-20:TP=-2:LRA=11,aresample=48000,apad[dub];"
-        f"[2:a]{stereo},volume=0.35,apad[bg];"
-        "[dub][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix];"
-        f"[0:a:0]aresample=48000:async=1:first_pts=0,{stereo},apad[original];"
-        f"[3:a]pan=stereo|c0=c0|c1=c0,{stereo},asplit[keep][inverse];"
-        "[inverse]aeval=1-val(0)|1-val(1)[replace];"
-        "[mix][replace]amultiply[dub_window];[original][keep]amultiply[source_window];"
-        "[dub_window][source_window]amix=inputs=2:duration=first:normalize=0[a]",
-        "-map", "0:v:0", "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k", "-t", f"{duration:.8f}", "-movflags", "+faststart",
-        destination,
+        ffmpeg, "-y", *inputs, "-filter_complex", ";".join(filters),
+        "-map", "0:v:0", "-map", audio_output, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-vsync", "0", "-c:a", "aac", "-b:a", "192k", "-shortest",
+        "-t", f"{duration:.8f}", "-movflags", "+faststart", destination,
     ])

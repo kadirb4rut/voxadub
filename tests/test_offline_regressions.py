@@ -338,6 +338,26 @@ def test_very_quiet_speech_gives_measured_diagnosis_before_synthesis(
     assert not output.exists()
 
 
+def test_source_fallback_keeps_a_delayed_audio_stream_in_sync(media_tools, offline_pipeline, tmp_path):
+    ffmpeg, ffprobe = media_tools
+    source, output = tmp_path / "delayed.mp4", tmp_path / "kept-source.mp4"
+    checked(
+        ffmpeg, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=128x80:rate=25:duration=3",
+        "-itsoffset", "0.45", "-f", "lavfi", "-i", "sine=frequency=431:sample_rate=48000:duration=2.55",
+        "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", source,
+    )
+    regular = (DiarizationTurn(.45, 3, "a"), DiarizationTurn(.45, 3, "b"))
+    _, calls = offline_pipeline(source, [word(.5, 2.8)], DiarizationResult(regular), output=output)
+    assert not calls
+    assert_mp4(ffmpeg, ffprobe, output, 3)
+    signal = np.frombuffer(checked(
+        ffmpeg, "-v", "error", "-i", output, "-vn", "-ac", 1, "-ar", 48000, "-f", "f32le", "-",
+    ).stdout, dtype="<f4")
+    audible = np.flatnonzero(np.abs(signal) > .02)
+    assert audible[0] / 48000 == pytest.approx(.45, abs=.02)
+
+
 def test_all_unresolved_overlap_exports_original_audio_without_loading_tts(
     media_tools, offline_pipeline, monkeypatch, tmp_path,
 ):
@@ -348,8 +368,9 @@ def test_all_unresolved_overlap_exports_original_audio_without_loading_tts(
         "-f", "lavfi", "-i", "testsrc2=size=128x80:rate=25:duration=3",
         "-f", "lavfi", "-i", "sine=frequency=431:sample_rate=48000:duration=3",
         "-f", "lavfi", "-i", "sine=frequency=997:sample_rate=48000:duration=3",
-        "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[a]",
-        "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-c:a", "aac", video,
+        "-f", "lavfi", "-i", "sine=frequency=181:sample_rate=48000:duration=3",
+        "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0,pan=stereo|c0=c0|c1=c0[a]",
+        "-map", "0:v", "-map", "3:a", "-map", "[a]", "-c:v", "libx264", "-c:a", "aac", video,
     )
     monkeypatch.setattr(pipeline, "load_model", lambda: pytest.fail("No safe group needs TTS"))
     regular = (DiarizationTurn(0, 3, "a"), DiarizationTurn(0, 3, "b"))
@@ -365,7 +386,7 @@ def test_all_unresolved_overlap_exports_original_audio_without_loading_tts(
         result = checked(ffmpeg, "-v", "error", "-i", path, "-vn", "-ac", 1, "-f", "f32le", "-")
         return np.frombuffer(result.stdout, dtype="<f4")
 
-    # Check both the transcribed interval and its surroundings.
+    # Check the selected stereo source throughout, including outside the transcript.
     original, output_audio = samples(video), samples(output)
     for window in (slice(2_400, 8_400), slice(48_000, 72_000), slice(137_000, 142_000)):
         assert np.corrcoef(original[window], output_audio[window])[0, 1] > .99

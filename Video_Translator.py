@@ -40,7 +40,7 @@ from voxcpm_runtime import (
     load_model,
     synthesize_cloned_speech,
 )
-from dubbing.reconstruction import render_with_source_audio
+from dubbing.reconstruction import render_on_source_timeline
 from engine.output_paths import available_mp4_path, checked_mp4_destination, mp4_name, publish_mp4
 from engine.qa import evaluate_tts
 from engine.reports import QualityReport
@@ -109,7 +109,10 @@ def mp4_to_wav(video_path, output_dir=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     video_wav_name = video_path.stem
     wav_path = output_dir / f"{video_wav_name}.wav"
-    run_command([ensure_ffmpeg(), "-y", "-i", video_path, "-map", "0:a:0", wav_path])
+    run_command([
+        ensure_ffmpeg(), "-y", "-i", video_path,
+        "-af", "aresample=async=1:first_pts=0", wav_path,
+    ])
 
     return str(wav_path), str(video_path)
 
@@ -1220,7 +1223,7 @@ def main():
     video_path = Path(args.video or input("\nVideo file path: ").strip()).expanduser().resolve()
     validation_started = time.perf_counter()
     try:
-        validate_dubbing_input(video_path)
+        input_media = validate_dubbing_input(video_path)
     except MediaValidationError as exc:
         raise SystemExit(str(exc)) from exc
     _emit_stability_metric("input_validation", validation_started)
@@ -1260,7 +1263,6 @@ def main():
     run_root = Path(mkdtemp(prefix=f"{video_path.stem}-", dir=runs))
     stage_started = time.perf_counter()
     audio_path, video_path_concat = mp4_to_wav(video_path, run_root / "original_wav")
-    videoclip = VideoFileClip(video_path_concat)
     _emit_stability_metric("media_extract", stage_started)
 
     separation_started = time.perf_counter()
@@ -1293,7 +1295,7 @@ def main():
     
     sentences = create_Sentences(loaded_transcript, character_set)
     segments = from_legacy_lists(
-        sentences, start, end, media_duration=float(videoclip.duration)
+        sentences, start, end, media_duration=input_media.duration
     )
     if not segments:
         raise SystemExit(
@@ -1318,7 +1320,7 @@ def main():
     )
     timing_groups = calculate_duration_budgets(
         build_timing_groups(segments, config=timing_config),
-        media_duration=float(videoclip.duration),
+        media_duration=input_media.duration,
     )
     merged = [group.original_segment_indices for group in timing_groups if len(group.segments) > 1]
     print(
@@ -1388,16 +1390,18 @@ def main():
     _emit_stability_metric("translation_tts_timing_refinement", synthesis_started)
     
     reconstruction_started = time.perf_counter()
+    videoclip = None
     try:
         with publish_mp4(output) as staged:
-            if source_fallbacks:
-                render_with_source_audio(
-                    video_path_concat, instrumental_audio_path, timing_groups, source_fallbacks,
-                    float(videoclip.duration), path_wav, run_root, staged,
+            if source_fallbacks or video_path.suffix.lower() != ".mp4":
+                render_on_source_timeline(
+                    video_path_concat, audio_path, instrumental_audio_path, timing_groups,
+                    source_fallbacks, input_media.duration, path_wav, run_root, staged,
                     ffmpeg=ensure_ffmpeg(), run=run_command, probe_duration=media_duration,
                     min_tempo=args.min_tempo, max_tempo=args.max_tempo,
                 )
             else:
+                videoclip = VideoFileClip(video_path_concat)
                 save_Subclips(timing_groups, videoclip, path_mp4, video_path_concat)
                 change_ClipSpeed(
                     timing_groups, path_ffmpeg, path_mp4, path_wav, final_movie,
@@ -1416,7 +1420,8 @@ def main():
     except FileExistsError as exc:
         raise SystemExit(f"Could not publish the video because the output already exists: {output}") from exc
     finally:
-        videoclip.close()
+        if videoclip is not None:
+            videoclip.close()
     print(f"FINAL_OUTPUT={output}", flush=True)
     _emit_stability_metric("video_audio_reconstruction", reconstruction_started)
     _emit_stability_metric("pipeline_total", pipeline_started)
