@@ -106,12 +106,9 @@ def run_video(job: str, filename: str, options: dict, hf_token: str = ""):
             args += ["--glossary", str(glossary)]
         if options.get("lip_sync"):
             args.append("--lip-sync")
+        output = job_dir / "translated.mp4"
+        args += ["--output", str(output)]
         subprocess.run(args, cwd=root, env=_runtime_environment(root), check=True)
-        source = root / "vocal-remover/final_video/final" / working_video.name
-        if options.get("lip_sync"):
-            source = source.with_name(source.stem + "_lipsync" + source.suffix)
-        output = job_dir / ("translated" + source.suffix)
-        shutil.copyfile(source, output)
         return str(output.relative_to("/storage"))
     finally:
         volume.commit()

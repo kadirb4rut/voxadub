@@ -47,7 +47,10 @@ class QualityReport:
         self.performance.setdefault("python", platform.python_version())
         if duration_seconds is not None:
             self.performance["total_wall_seconds"] = float(duration_seconds)
-        qualities = [row.get("quality", {}) for row in self.groups]
+        qualities = [
+            row.get("quality", {}) for row in self.groups
+            if row.get("audio_mode") != "source_preserved"
+        ]
         self.summary = {
             "groups": len(self.groups),
             "passed": sum(not item.get("hard_failures") for item in qualities if isinstance(item, Mapping)),
@@ -58,6 +61,9 @@ class QualityReport:
             "mean_speaker_similarity": _mean([((item.get("speaker_similarity") or {}).get("cosine")) for item in qualities if isinstance(item, Mapping)]),
             "mean_prosody_distance": _mean([row.get("prosody_distance") for row in self.groups]),
         }
+        source_preserved = sum(row.get("audio_mode") == "source_preserved" for row in self.groups)
+        if source_preserved:
+            self.summary["source_preserved"] = source_preserved
         return self.payload()
 
     def payload(self) -> dict[str, object]:
@@ -113,6 +119,7 @@ def render_html(payload: Mapping[str, object]) -> str:
             row.get("original_group_index", row.get("group_index")), row.get("speaker", "—"),
             row.get("tts_backend"), row.get("final_duration_seconds", (quality.get("signal") or {}).get("duration_seconds")),
             row.get("applied_tempo", "—"), quality.get("wer"), row.get("prosody_distance"),
+            "Source audio kept" if row.get("audio_mode") == "source_preserved" else
             "; ".join(failures) or "passed", quality.get("retry_count", 0),
         )) + "</tr>")
         details.append(

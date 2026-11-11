@@ -13,6 +13,8 @@ MIN_FALLBACK_REFERENCE_SECONDS = 0.5
 MAX_REFERENCE_SECONDS = 20.0
 PREFERRED_REFERENCE_MIN_SECONDS = 3.0
 PREFERRED_REFERENCE_MAX_SECONDS = 12.0
+MIN_REFERENCE_RMS = 0.008
+MIN_REFERENCE_PEAK = 0.02
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,18 @@ class AudioQuality:
     rms: float
     peak: float
     clipped_fraction: float
+
+    @property
+    def below_reference_floor(self) -> bool:
+        return self.rms < MIN_REFERENCE_RMS or self.peak < MIN_REFERENCE_PEAK
+
+
+class NoSafeVoiceReference(ValueError):
+    """The available audio cannot safely condition synthesis for this segment."""
+
+
+class QuietVoiceReference(NoSafeVoiceReference):
+    """Speech was found, but its measured level is below the reference floor."""
 
 
 @dataclass(frozen=True)
@@ -41,7 +55,7 @@ def reference_score(segment: SpeechSegment, quality: AudioQuality) -> Optional[t
         or segment.duration > MAX_REFERENCE_SECONDS
     ):
         return None
-    if quality.rms < 0.008 or quality.peak < 0.02:
+    if quality.below_reference_floor:
         return None
     if quality.peak >= 0.999 or quality.clipped_fraction > 0.01:
         return None
@@ -130,6 +144,19 @@ class SpeakerReferenceManager:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    def reference_for_group(self, segments: Sequence[SpeechSegment]) -> SpeakerReference:
+        """Resolve against the measured audio of an actual group member."""
+        failure = None
+        for segment in segments:
+            try:
+                return self.reference_for(segment)
+            except NoSafeVoiceReference as exc:
+                if failure is None or isinstance(exc, QuietVoiceReference):
+                    failure = exc
+        if failure is not None:
+            raise failure
+        raise ValueError("A timing group must contain at least one source segment.")
+
     def reference_for(self, segment: SpeechSegment) -> SpeakerReference:
         if (
             segment.speaker
@@ -139,7 +166,7 @@ class SpeakerReferenceManager:
             return self._speaker_references[segment.speaker]
 
         if segment.speaker_ambiguous:
-            raise ValueError(
+            raise NoSafeVoiceReference(
                 "Cannot synthesize transcript segment "
                 f"{segment.index + 1} ({segment.start:.2f}–{segment.end:.2f}s): "
                 "speaker identity is ambiguous. Review the diarization or provide "
@@ -148,17 +175,22 @@ class SpeakerReferenceManager:
 
         if segment.index not in self._segment_fallbacks:
             quality = self.qualities.get(segment.index)
-            if (
-                segment.duration < MIN_FALLBACK_REFERENCE_SECONDS
-                or segment.duration > MAX_REFERENCE_SECONDS
-                or segment.overlap
-                or quality is None
-                or quality.rms < 0.008
-                or quality.peak < 0.02
-                or quality.peak >= 0.999
-                or quality.clipped_fraction > 0.01
-            ):
-                raise ValueError(
+            eligible_interval = (
+                MIN_FALLBACK_REFERENCE_SECONDS <= segment.duration <= MAX_REFERENCE_SECONDS
+                and not segment.overlap
+                and quality is not None
+                and quality.peak < 0.999
+                and quality.clipped_fraction <= 0.01
+            )
+            if eligible_interval and quality.peak > 0 and quality.below_reference_floor:
+                raise QuietVoiceReference(
+                    f"Speech audio is too quiet for a voice reference at "
+                    f"{segment.start:.2f}–{segment.end:.2f}s "
+                    f"(RMS {quality.rms:.4f}, peak {quality.peak:.4f}). "
+                    "Raise the source speech level without clipping and try again."
+                )
+            if not eligible_interval or quality.below_reference_floor:
+                raise NoSafeVoiceReference(
                     "No safe voice reference is available for transcript segment "
                     f"{segment.index + 1} ({segment.start:.2f}–{segment.end:.2f}s). "
                     "No stable same-speaker reference was found, and this segment "

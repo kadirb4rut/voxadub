@@ -14,6 +14,7 @@ from translation.hymt2 import validate_device  # noqa: E402
 from translation.registry import MODEL_BY_KEY  # noqa: E402
 from dubbing.timing import TimingGroupConfig  # noqa: E402
 from engine.media_validation import MediaValidationError, validate_dubbing_input  # noqa: E402
+from engine.output_paths import available_mp4_path, checked_mp4_destination, publish_mp4  # noqa: E402
 OUTPUT_DIR = BASE_DIR / "vocal-remover" / "final_video" / "final"
 LATENTSYNC_DIR = BASE_DIR / "third_party" / "LatentSync"
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
@@ -31,12 +32,11 @@ def ensure_ffmpeg():
 
 
 def expected_dubbed_output(video_path):
-    return OUTPUT_DIR / Path(video_path).name
+    return available_mp4_path(OUTPUT_DIR, video_path)
 
 
 def expected_lipsync_output(video_path):
-    input_path = Path(video_path)
-    return OUTPUT_DIR / f"{input_path.stem}_lipsync{input_path.suffix or '.mp4'}"
+    return available_mp4_path(OUTPUT_DIR, video_path, lip_sync=True)
 
 
 def latentsync_python(latentsync_dir):
@@ -103,12 +103,9 @@ def run_latentsync(video_path, output_path, steps, guidance_scale, seed):
     python_executable = latentsync_python(latentsync_dir)
     check_latentsync_ready(latentsync_dir, python_executable)
 
-    temp_dir = BASE_DIR / "temp" / "latentsync"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = temp_dir / f"{Path(video_path).stem}_latentsync_audio.wav"
-    run([ensure_ffmpeg(), "-y", "-i", video_path, "-vn", "-ar", "16000", "-ac", "1", audio_path])
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path = output_path.parent / "latentsync_audio.wav"
+    run([ensure_ffmpeg(), "-y", "-i", video_path, "-vn", "-ar", "16000", "-ac", "1", audio_path])
     command = [
         python_executable,
         "-m",
@@ -137,6 +134,7 @@ def run_latentsync(video_path, output_path, steps, guidance_scale, seed):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run local speaker-aware dubbing, optionally followed by LatentSync.")
     parser.add_argument("video", help="Input video path")
+    parser.add_argument("--output", help="Destination .mp4 file. An existing file is never replaced.")
     parser.add_argument("--source-language", default="auto")
     parser.add_argument("--target-language", default="en")
     parser.add_argument("--no-diarization", action="store_false", dest="diarization")
@@ -199,10 +197,29 @@ def main():
         print(str(exc), file=sys.stderr)
         return 2
 
+    try:
+        requested_output = checked_mp4_destination(args.output) if args.output else None
+        dubbed_output = (
+            requested_output if requested_output and not args.lip_sync
+            else expected_dubbed_output(video_path)
+        )
+        lipsync_output = None
+        if args.lip_sync:
+            lipsync_output = requested_output or expected_lipsync_output(video_path)
+            if lipsync_output == dubbed_output:
+                dubbed_output = available_mp4_path(
+                    OUTPUT_DIR, f"{video_path.stem}_pre_lipsync.mp4"
+                )
+    except (ValueError, FileExistsError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     command = [
         sys.executable,
         BASE_DIR / "Video_Translator.py",
         video_path,
+        "--output",
+        dubbed_output,
         "--source-language",
         args.source_language,
         "--target-language",
@@ -244,23 +261,27 @@ def main():
     ):
         if value is not None:
             command.extend([option, str(value)])
-    run(command)
+    try:
+        run(command)
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
 
-    final_output = expected_dubbed_output(video_path)
-    if not final_output.exists():
-        raise RuntimeError(f"Dubbed output was not created: {final_output}")
+    if not dubbed_output.is_file():
+        raise RuntimeError(f"Dubbed output was not created: {dubbed_output}")
+    final_output = dubbed_output
 
-    if args.lip_sync:
-        lip_sync_output = expected_lipsync_output(video_path)
-        print(f"\nStarting LatentSync lip-sync: {lip_sync_output}\n", flush=True)
-        run_latentsync(
-            str(final_output),
-            lip_sync_output,
-            args.latentsync_steps,
-            args.latentsync_guidance_scale,
-            args.latentsync_seed,
-        )
-        final_output = lip_sync_output
+    if lipsync_output is not None:
+        print(f"\nStarting LatentSync lip-sync: {lipsync_output}\n", flush=True)
+        try:
+            with publish_mp4(lipsync_output) as staged:
+                run_latentsync(
+                    str(dubbed_output), staged, args.latentsync_steps,
+                    args.latentsync_guidance_scale, args.latentsync_seed,
+                )
+        except FileExistsError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        final_output = lipsync_output
 
     print(f"\nFINAL_OUTPUT={final_output}\n", flush=True)
     return 0
