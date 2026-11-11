@@ -219,6 +219,15 @@ def word(start, end, text="Words."):
     return {"word": text, "start": start, "end": end}
 
 
+def test_unsupported_manual_source_language_exits_before_inference(media_tools, offline_pipeline, tmp_path):
+    ffmpeg, _ = media_tools
+    source = tmp_path / "source.mp4"
+    make_media(ffmpeg, source, 2.2)
+    with pytest.raises(SystemExit, match="Invalid language: cy.*Valid values:"):
+        offline_pipeline(source, (), None, arguments=("--source-language", "cy"))
+    assert not list((tmp_path / "project").glob("temp/timing-runs/*"))
+
+
 def assert_mp4(ffmpeg, ffprobe, output, seconds):
     assert output.is_file()
     probe = json.loads(checked(

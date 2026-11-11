@@ -1237,6 +1237,19 @@ def main():
     except (ValueError, FileExistsError) as exc:
         raise SystemExit(str(exc)) from None
 
+    print("\n\n" + " " * 30 + "* VIDEO TRANSLATOR *\n\n")
+    try:
+        source_language = (
+            normalize_language(args.source_language, allow_auto=True) if args.source_language
+            else ask_language("\nPlease select the original video language number : ", allow_auto=True)
+        )
+        target_language = (
+            normalize_language(args.target_language) if args.target_language
+            else ask_language("\nPlease select the target video language number : ")
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+
     modal_synthesizer = None
     modal_previous_sigterm = None
     if args.tts_backend == "modal":
@@ -1253,11 +1266,6 @@ def main():
 
         signal.signal(signal.SIGTERM, release_modal_on_sigterm)
 
-    print('\n\n'+' '*30 + '* VIDEO TRANSLATOR *\n\n')
-
-    source_language = normalize_language(args.source_language, allow_auto=True) if args.source_language else ask_language('\nPlease select the original video language number : ', allow_auto=True)
-    target_language = normalize_language(args.target_language) if args.target_language else ask_language('\nPlease select the target video language number : ')
-    
     runs = BASE_DIR / "temp" / "timing-runs"
     runs.mkdir(parents=True, exist_ok=True)
     run_root = Path(mkdtemp(prefix=f"{video_path.stem}-", dir=runs))
