@@ -760,7 +760,7 @@ def generate_dubbed_speech(
                 "prosody_style": bool(use_prosody_style),
             },
         )
-        results = iter(zip(synthesis_results, quality_results))
+        results = iter(zip(synthesis_results, quality_results, prosody_profiles))
         for index, group in enumerate(groups, 1):
             if group.index not in references:
                 report.add_group(
@@ -773,12 +773,11 @@ def generate_dubbed_speech(
                     },
                 )
                 continue
-            result, quality = next(results)
-            reference = references[group.index]
+            result, quality, source_prosody = next(results)
             distance = None
-            if index - 1 < len(prosody_profiles) and prosody_profiles[index - 1] is not None:
+            if source_prosody is not None:
                 try:
-                    distance = prosody_distance(prosody_profiles[index - 1], extract_prosody(result.output_path))
+                    distance = prosody_distance(source_prosody, extract_prosody(result.output_path))
                 except Exception:
                     distance = None
             report.add_group(

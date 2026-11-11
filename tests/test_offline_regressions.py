@@ -336,3 +336,39 @@ def test_very_quiet_speech_gives_measured_diagnosis_before_synthesis(
     with pytest.raises(SystemExit, match=r"too quiet.*RMS.*peak.*without clipping"):
         offline_pipeline(quiet, [word(.2, 2)], DiarizationResult((turn,), (turn,)), output=output)
     assert not output.exists()
+
+
+def test_all_unresolved_overlap_exports_original_audio_without_loading_tts(
+    media_tools, offline_pipeline, monkeypatch, tmp_path,
+):
+    ffmpeg, ffprobe = media_tools
+    video = tmp_path / "all-mixed.mp4"
+    checked(
+        ffmpeg, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=128x80:rate=25:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=431:sample_rate=48000:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=997:sample_rate=48000:duration=3",
+        "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[a]",
+        "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-c:a", "aac", video,
+    )
+    monkeypatch.setattr(pipeline, "load_model", lambda: pytest.fail("No safe group needs TTS"))
+    regular = (DiarizationTurn(0, 3, "a"), DiarizationTurn(0, 3, "b"))
+    output = tmp_path / "kept-source.mp4"
+    root, calls = offline_pipeline(video, [word(.2, 2.8)], DiarizationResult(regular), output=output)
+    assert not calls
+    assert_mp4(ffmpeg, ffprobe, output, 3)
+    report = json.loads(next((root / "temp").rglob("quality_report.json")).read_text())
+    assert report["summary"]["source_preserved"] == 1
+    assert report["summary"]["passed"] == 0
+
+    def samples(path):
+        result = checked(ffmpeg, "-v", "error", "-i", path, "-vn", "-ac", 1, "-f", "f32le", "-")
+        return np.frombuffer(result.stdout, dtype="<f4")
+
+    # Check both the transcribed interval and its surroundings.
+    original, output_audio = samples(video), samples(output)
+    for window in (slice(2_400, 8_400), slice(48_000, 72_000), slice(137_000, 142_000)):
+        assert np.corrcoef(original[window], output_audio[window])[0, 1] > .99
+        assert np.linalg.norm(output_audio[window]) == pytest.approx(
+            np.linalg.norm(original[window]), rel=.07
+        )
