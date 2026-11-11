@@ -26,6 +26,7 @@ from live_dubbing.service_launcher import ensure_live_service, stop_managed_serv
 from compute_backends.providers import validate_provider
 from compute_backends.settings import load_compute_settings, save_compute_settings
 from compute_backends.onboarding import connection as cloud_connection
+from engine.output_paths import available_mp4_path
 from engine.diagnostics import create_private_diagnostic_log, sanitize_for_display
 from voxcpm_runtime import model_ready
 
@@ -156,12 +157,7 @@ def reset_gui_view_state():
 
 
 def expected_output_path(uploaded_video, lip_sync=False, provider="local"):
-    video_path = Path(uploaded_video)
-    if provider in ("colab", "modal"):
-        video_path = video_path.with_suffix(".mp4")
-    if lip_sync:
-        return OUTPUT_DIR / f"{video_path.stem}_lipsync{video_path.suffix or '.mp4'}"
-    return OUTPUT_DIR / video_path.name
+    return available_mp4_path(OUTPUT_DIR, uploaded_video, lip_sync=lip_sync)
 
 
 def latentsync_files_ready():
@@ -1690,6 +1686,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        output_path = expected_output_path(uploaded_video, lip_sync=lip_sync, provider=provider)
         if provider in ("colab", "modal"):
             ready = cloud_connection.status()
             if ready["stage"] != "ready" or ready["provider"] != provider or ready.get("model") != translation_model:
@@ -1700,7 +1697,7 @@ class Handler(BaseHTTPRequestHandler):
                 "--compute", provider,
                 "--session", preferences["colab_session"],
                 "--remote-project", preferences["remote_project"],
-                "--output", str(expected_output_path(uploaded_video, lip_sync=lip_sync, provider=provider)),
+                "--output", str(output_path),
                 "--source-language", source_arg, "--target-language", target,
                 "--translation-model", translation_model, "--translation-device", translation_device,
             ]
@@ -1709,6 +1706,7 @@ class Handler(BaseHTTPRequestHandler):
                 sys.executable,
                 str(BASE_DIR / "scripts" / "run_pipeline.py"),
                 uploaded_video,
+                "--output", str(output_path),
                 "--source-language",
                 source_arg,
                 "--target-language",
@@ -1739,7 +1737,6 @@ class Handler(BaseHTTPRequestHandler):
             command.extend(["--glossary", str(glossary_path)])
         if lip_sync:
             command.append("--lip-sync")
-        output_path = expected_output_path(uploaded_video, lip_sync=lip_sync, provider=provider)
         ok, message = run_process(command, "Running", output_path=output_path)
         json_response(self, {"ok": ok, "message": message}, 200 if ok else 409)
 

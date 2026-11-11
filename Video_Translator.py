@@ -6,8 +6,10 @@ import json
 import shutil
 import signal
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
+from tempfile import mkdtemp
 from tqdm import tqdm
 from fsorter import fsorter
 import subprocess
@@ -17,7 +19,10 @@ from diarization.client import DiarizationUnavailable, diarize
 from diarization.assignment import validate_speaker_bounds
 from dubbing.duration import duration_ratio, synthesize_with_duration_refinement
 from dubbing.candidates import assess_timing_candidate, choose_best_candidate, protected_tokens, score_candidate
-from dubbing.references import AudioQuality, SpeakerReference, SpeakerReferenceManager
+from dubbing.references import (
+    AudioQuality, NoSafeVoiceReference, QuietVoiceReference,
+    SpeakerReference, SpeakerReferenceManager,
+)
 from dubbing.segments import SpeechSegment, from_legacy_lists, surrounding_text
 from dubbing.speech_length import SpeakerRateEstimator, estimate_spoken_length
 from dubbing.timing import (
@@ -35,6 +40,8 @@ from voxcpm_runtime import (
     load_model,
     synthesize_cloned_speech,
 )
+from dubbing.reconstruction import render_with_source_audio
+from engine.output_paths import available_mp4_path, checked_mp4_destination, mp4_name, publish_mp4
 from engine.qa import evaluate_tts
 from engine.reports import QualityReport
 from engine.media_validation import MediaValidationError, validate_dubbing_input
@@ -93,16 +100,16 @@ def safe_media_end(clip, requested_end=None, start=0.0):
     end = min(durations)
     return end if end - start >= MIN_CLIP_DURATION else None
 
-def mp4_to_wav(video_path):
+def mp4_to_wav(video_path, output_dir=None):
     video_path = Path(video_path).expanduser().resolve()
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    output_dir = BASE_DIR / "original_wav"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = Path(output_dir) if output_dir is not None else BASE_DIR / "original_wav"
+    output_dir.mkdir(parents=True, exist_ok=True)
     video_wav_name = video_path.stem
     wav_path = output_dir / f"{video_wav_name}.wav"
-    run_command([ensure_ffmpeg(), "-y", "-i", video_path, wav_path])
+    run_command([ensure_ffmpeg(), "-y", "-i", video_path, "-map", "0:a:0", wav_path])
 
     return str(wav_path), str(video_path)
 
@@ -153,27 +160,35 @@ def transcript_Text(vocal_audio_path, source_language): #
         print(f"Detected language: {max(probs, key=probs.get)}")
         result = model.transcribe(audio, language=auto_lang, verbose=True)
         
-    print(result["segments"]) # before alignment
-    
-    # load alignment model and metadata
-    model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-    # align whisper output
-    result_aligned = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=True) # return_char_alignments --> Character based TimeStamps!
-    transcript = result_aligned["word_segments"]
-    
-    removable_index = list()
-    for i in range(len(transcript)):
-        if transcript[i].get('start') == None: # and result.get('segments')[i].get('start') != None
-            removable_index.append(i)
-    transcript_edit = transcript
-    i = 0
-    for i in range(len(removable_index)):        
-        transcript_edit.pop(removable_index[i])
-        if i == (len(removable_index) - 1): 
-            break
-        removable_index[i+1] -= 1
+    return align_transcript_words(whisperx, result, audio, device)
 
-    return transcript
+
+class TranscriptionAlignmentError(ValueError):
+    """Whisper detected a language that the installed WhisperX cannot align."""
+
+
+def align_transcript_words(whisperx, result, audio, device):
+    if not result["segments"]:
+        return []
+    language = result["language"]
+    try:
+        model, metadata = whisperx.load_align_model(language_code=language, device=device)
+    except ValueError as exc:
+        if "no default align-model for language" not in str(exc).lower():
+            raise
+        raise TranscriptionAlignmentError(
+            f"Whisper detected source language {language!r}, which has no default "
+            "WhisperX alignment model. If the detection is wrong, select the language "
+            "actually spoken in the video with --source-language. "
+            "If the track contains only music or noise, provide a video with speech."
+        ) from exc
+    aligned = whisperx.align(
+        result["segments"], model, metadata, audio, device, return_char_alignments=True
+    )
+    return [
+        word for word in aligned["word_segments"]
+        if word.get("word", "").strip() and word.get("start") is not None and word.get("end") is not None
+    ]
 
 
 def save_Transcript(vocal_audio_path, transcript_path, source_language): #  2
@@ -190,21 +205,15 @@ def read_Transcript(transcript_path):  #  3
 
 
 def create_TimeStamps(loaded_transcript, character_set): #  5 
-    start = list()
-    end = list()
-    for i in tqdm(range(len(loaded_transcript))):
-        if i == 0 and len(loaded_transcript) == 1:
-            start.append(loaded_transcript[i].get('start'))
-            end.append(loaded_transcript[i].get('end'))
-        elif i == 0:
-            start.append(loaded_transcript[i].get('start')) # round(loaded_transcript[i].get('start'), 4)
-        elif i == len(loaded_transcript) - 1:
-            end.append(loaded_transcript[i].get('end') )
-        
-        elif loaded_transcript[i].get('word')[-1] in character_set:
-                end.append(loaded_transcript[i].get('end') )
-                start.append(loaded_transcript[i+1].get('start')) # round(loaded_transcript[i+1].get('start'), 4)
-    
+    start, end = [], []
+    opens_sentence = True
+    for i, word in enumerate(loaded_transcript):
+        if opens_sentence:
+            start.append(word["start"])
+        opens_sentence = word["word"].rstrip()[-1] in character_set
+        if opens_sentence or i == len(loaded_transcript) - 1:
+            end.append(word["end"])
+
     return start, end
 
 
@@ -212,7 +221,7 @@ def create_Sentences(loaded_transcript, character_set): #  6
     sentences = list()
     text = str()
     for i in tqdm(range(len(loaded_transcript))):
-        text +=  loaded_transcript[i].get('word')
+        text += loaded_transcript[i]['word'].strip()
         if (text[-1] in character_set) != True:
             text += ' '
         else:
@@ -391,17 +400,45 @@ def generate_dubbed_speech(
     use_prosody_style=False,
     qa_retries=1,
     tts_evaluator=None,
+    source_fallbacks: Optional[dict[int, str]] = None,
 ):
-    if tts_synthesizer is None:
+    reference_manager.prepare()
+    references = {}
+    quiet_error = None
+    for group in groups:
+        try:
+            if isinstance(reference_manager, SpeakerReferenceManager):
+                references[group.index] = reference_manager.reference_for_group(group.segments)
+            else:
+                references[group.index] = reference_manager.reference_for(group.as_reference_segment())
+        except NoSafeVoiceReference as exc:
+            if source_fallbacks is None:
+                raise
+            source_fallbacks[group.index] = str(exc)
+            if isinstance(exc, QuietVoiceReference):
+                quiet_error = exc
+    if not references and quiet_error is not None:
+        raise quiet_error
+    if source_fallbacks:
+        for group in groups:
+            if group.index in source_fallbacks:
+                print(
+                    f"Source audio kept at {group.start:.2f}–{group.end:.2f}s. "
+                    f"{source_fallbacks[group.index]}",
+                    flush=True,
+                )
+        if not references:
+            print("No groups had a safe reference. The export will retain the original audio.", flush=True)
+
+    if references and tts_synthesizer is None:
         print("Loading pinned local VoxCPM2 voice-cloning model...", flush=True)
-    else:
+    elif references:
         print(f"Using {tts_backend_name} speech generation...", flush=True)
     model = None
-    if tts_synthesizer is None:
+    if references and tts_synthesizer is None:
         model_started = time.perf_counter()
         model = load_model()
         _emit_stability_metric("voxcpm2_model_load", model_started)
-    reference_manager.prepare()
     rate_estimator = SpeakerRateEstimator()
     if context_memory is None:
         from engine.context import ContextMemory
@@ -411,8 +448,14 @@ def generate_dubbed_speech(
     quality_results = []
     prosody_profiles = []
     evaluate_audio = tts_evaluator or evaluate_tts
-    with HyMT2Translator(translation_model, translation_device) as translator:
+    translator_context = (
+        HyMT2Translator(translation_model, translation_device) if references else nullcontext()
+    )
+    with translator_context as translator:
         for i, group in enumerate(tqdm(groups)):
+            if group.index not in references:
+                continue
+            reference = references[group.index]
             budget = group.budget
             if budget is None:
                 budget = calculate_duration_budgets(groups)[i].budget
@@ -492,7 +535,6 @@ def generate_dubbed_speech(
                     )
                 )
             chosen = choose_best_candidate(candidates)
-            reference = reference_manager.reference_for(group.as_reference_segment())
             wav_file = Path(path_wav) / f"{i + 1}.wav"
             source_prosody = source_prosody_fn(group) if source_prosody_fn else None
             style = style_instruction(source_prosody) if use_prosody_style and source_prosody else None
@@ -718,14 +760,21 @@ def generate_dubbed_speech(
                 "prosody_style": bool(use_prosody_style),
             },
         )
-        for index, (group, result) in enumerate(zip(groups, synthesis_results), 1):
-            reference = reference_manager.reference_for(group.as_reference_segment())
-            quality = quality_results[index - 1] if index - 1 < len(quality_results) else evaluate_tts(
-                result.output_path,
-                result.translation,
-                expected_duration=result.preferred_duration,
-                reference_wav=reference.wav_path,
-            )
+        results = iter(zip(synthesis_results, quality_results))
+        for index, group in enumerate(groups, 1):
+            if group.index not in references:
+                report.add_group(
+                    index,
+                    extra={
+                        "audio_mode": "source_preserved",
+                        "reason": source_fallbacks[group.index],
+                        "source_start_seconds": group.start,
+                        "source_end_seconds": group.end,
+                    },
+                )
+                continue
+            result, quality = next(results)
+            reference = references[group.index]
             distance = None
             if index - 1 < len(prosody_profiles) and prosody_profiles[index - 1] is not None:
                 try:
@@ -927,8 +976,9 @@ def concatenate_All_Clip_Parts(video_bosluklari): #  15
     return final
 
 
-def save_Final_Video(final, final_video_name): #  16
-    final_video_dir = Path(os.getcwd()) / "final_video"
+def save_Final_Video(final, final_video_name, *, workspace=None): #  16
+    final_video_dir = Path(workspace or os.getcwd()) / "final_video"
+    final_video_name = mp4_name(final_video_name)
     final_video_full_dir = final_video_dir / "final"
     final_video_dir.mkdir(exist_ok=True)
     final_video_full_dir.mkdir(exist_ok=True)
@@ -940,8 +990,9 @@ def save_Final_Video(final, final_video_name): #  16
         audio_codec="aac",
         audio_fps=VOXCPM_OUTPUT_SAMPLE_RATE,
         audio_bitrate="192k",
+        temp_audiofile=str(final_video_dir / "temp-audio.m4a"),
     )
-    
+
     return final_video_path, final__full_video_path
 
 
@@ -1011,6 +1062,7 @@ def ask_language(prompt, allow_auto=False):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Fully local speaker-aware video dubbing pipeline")
     parser.add_argument("video", nargs="?", help="Path to the input video")
+    parser.add_argument("--output", help="Destination .mp4 file. An existing file is never replaced.")
     parser.add_argument("--source-language", "-s", help="Source language code or name, for example: en, tr, auto")
     parser.add_argument("--target-language", "-t", help="Target language code or name, for example: en, tr")
     parser.add_argument(
@@ -1174,6 +1226,15 @@ def main():
         raise SystemExit(str(exc)) from exc
     _emit_stability_metric("input_validation", validation_started)
 
+    output_dir = VOCAL_REMOVER_DIR / "final_video" / "final"
+    try:
+        output = (
+            checked_mp4_destination(args.output) if args.output
+            else available_mp4_path(output_dir, video_path)
+        )
+    except (ValueError, FileExistsError) as exc:
+        raise SystemExit(str(exc)) from None
+
     modal_synthesizer = None
     modal_previous_sigterm = None
     if args.tts_backend == "modal":
@@ -1195,52 +1256,35 @@ def main():
     source_language = normalize_language(args.source_language, allow_auto=True) if args.source_language else ask_language('\nPlease select the original video language number : ', allow_auto=True)
     target_language = normalize_language(args.target_language) if args.target_language else ask_language('\nPlease select the target video language number : ')
     
+    runs = BASE_DIR / "temp" / "timing-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    run_root = Path(mkdtemp(prefix=f"{video_path.stem}-", dir=runs))
     stage_started = time.perf_counter()
-    audio_path, video_path_concat = mp4_to_wav(video_path)
+    audio_path, video_path_concat = mp4_to_wav(video_path, run_root / "original_wav")
     videoclip = VideoFileClip(video_path_concat)
     _emit_stability_metric("media_extract", stage_started)
-    os.chdir(VOCAL_REMOVER_DIR)
-    if ('vocals' in os.listdir()) != True:
-        os.mkdir('vocals')
-    file_path = 'vocals/'
-    
+
     separation_started = time.perf_counter()
+    vocals = run_root / "vocals"
+    vocals.mkdir()
     try:
-        if (os.path.basename(audio_path).split('.')[0] + '_Vocals.wav' in os.listdir('vocals/')) != True:
-            seperate_Speaker_and_Background_Sound_from_audio(audio_path, file_path)
-        os.chdir(BASE_DIR)
+        seperate_Speaker_and_Background_Sound_from_audio(audio_path, vocals)
     except Exception as exc:
-        os.chdir(BASE_DIR)
-        raise RuntimeError('Vocal separating is not working!') from exc
+        raise RuntimeError("Vocal separation failed.") from exc
     finally:
         _emit_stability_metric("vocal_background_separation", separation_started)
-     
-    # 2 ----------------------------------------
-    
-    if ('transcripts' in os.listdir()) != True:
-        os.mkdir('transcripts')
-    transcript_path = os.path.splitext(audio_path)[0].split('/')[-1]
-    transcript_path = str(os.getcwd() + '/transcripts/' + transcript_path)
-    
-    os.chdir(VOCAL_REMOVER_DIR)
-    vocal_audio_path = os.getcwd() + "/" + file_path + os.path.splitext(audio_path)[0].split('/')[-1] +'_Vocals.wav'
-    instrumental_audio_path = os.getcwd() + "/" + file_path + os.path.splitext(audio_path)[0].split('/')[-1] +'_Instruments.wav'
-    
-    split_transcript_name = transcript_path.split('/')[-1]
-    split_transcript_folder = transcript_path.split('/')
-    split_transcript_folder.pop(-1)
-    split_transcript_folder = '/'.join(split_transcript_folder) + str('/')
+    vocal_audio_path = vocals / f"{Path(audio_path).stem}_Vocals.wav"
+    instrumental_audio_path = vocals / f"{Path(audio_path).stem}_Instruments.wav"
+
     transcription_started = time.perf_counter()
-    transcript_cached = split_transcript_name in os.listdir(split_transcript_folder)
-    if not transcript_cached:
-        save_Transcript(vocal_audio_path, transcript_path, source_language)
-    _emit_stability_metric(
-        "transcription_alignment", transcription_started, cache_hit=str(transcript_cached).lower()
-    )
-    
+    try:
+        loaded_transcript = transcript_Text(vocal_audio_path, source_language)
+    except TranscriptionAlignmentError as exc:
+        raise SystemExit(str(exc)) from None
+    _emit_stability_metric("transcription_alignment", transcription_started)
+
     # 3 -----------------------------------------
     
-    loaded_transcript = read_Transcript(transcript_path)
     
     # 4 -----------------------------------------
     character_set = ['.', '!', '?']
@@ -1253,7 +1297,7 @@ def main():
         sentences, start, end, media_duration=float(videoclip.duration)
     )
     if not segments:
-        raise RuntimeError(
+        raise SystemExit(
             "Transcription produced no usable speech segments inside the video duration."
         )
 
@@ -1296,13 +1340,10 @@ def main():
             clip_writer=lambda segment, output: write_reference_clip(
                 segment, vocal_audio_path, output
             ),
-            output_dir=BASE_DIR / "speaker_reference_clips",
+            output_dir=run_root / "speaker_reference_clips",
         )
     # 7 -----------------------------------------
     
-    # Use a run-scoped workspace so merged groups cannot be mixed with stale
-    # per-segment artifacts from an earlier invocation.
-    run_root = BASE_DIR / "temp" / "timing-runs" / f"{video_path.stem}-{int(time.time())}"
     for name in ("wav", "mp4", "final_movie", "ffmpeg"):
         (run_root / name).mkdir(parents=True, exist_ok=True)
     path_wav = str(run_root / "wav") + "/"
@@ -1312,6 +1353,7 @@ def main():
     
     glossary = load_glossary(args.glossary)
     synthesis_started = time.perf_counter()
+    source_fallbacks = {}
     try:
         generate_dubbed_speech(
             timing_groups,
@@ -1330,7 +1372,10 @@ def main():
             ideal_max_tempo=args.ideal_max_tempo,
             tts_synthesizer=modal_synthesizer,
             tts_backend_name="voxcpm2-modal" if modal_synthesizer is not None else "voxcpm2-native",
+            source_fallbacks=source_fallbacks,
         )
+    except QuietVoiceReference as exc:
+        raise SystemExit(str(exc)) from None
     finally:
         # Modal is optional and exposes this cleanup hook only for the remote
         # TTS adapter. Local TTS and the dubbing pipeline are unchanged.
@@ -1344,39 +1389,36 @@ def main():
     _emit_stability_metric("translation_tts_timing_refinement", synthesis_started)
     
     reconstruction_started = time.perf_counter()
-    save_Subclips(timing_groups, videoclip, path_mp4, video_path_concat)
-    
-    # 10 -----------------------------------------
-    
-    change_ClipSpeed(
-        timing_groups,
-        path_ffmpeg,
-        path_mp4,
-        path_wav,
-        final_movie,
-        min_tempo=args.min_tempo,
-        max_tempo=args.max_tempo,
-    )
-    
-    # 11 -----------------------------------------
-    
-    video_bosluklari = clip_Parts_without_speaker(timing_groups, videoclip)
-    
-    # 12 -----------------------------------------
-    
-    remove_and_setting_video_ends(timing_groups, video_bosluklari, final_movie, path_mp4)
-    
-    # 13 -----------------------------------------
-    
-    final = concatenate_All_Clip_Parts(video_bosluklari)
-    
-    # 14 -----------------------------------------
-    final_video_name = os.path.basename(video_path_concat)
-    final_video_path, final__full_video_path = save_Final_Video(final, final_video_name)
-    
-    # 15 -----------------------------------------
-    
-    concatenate_Video_And_Background_Sound(final_video_path, instrumental_audio_path, final__full_video_path)
+    try:
+        with publish_mp4(output) as staged:
+            if source_fallbacks:
+                render_with_source_audio(
+                    video_path_concat, instrumental_audio_path, timing_groups, source_fallbacks,
+                    float(videoclip.duration), path_wav, run_root, staged,
+                    ffmpeg=ensure_ffmpeg(), run=run_command, probe_duration=media_duration,
+                    min_tempo=args.min_tempo, max_tempo=args.max_tempo,
+                )
+            else:
+                save_Subclips(timing_groups, videoclip, path_mp4, video_path_concat)
+                change_ClipSpeed(
+                    timing_groups, path_ffmpeg, path_mp4, path_wav, final_movie,
+                    min_tempo=args.min_tempo, max_tempo=args.max_tempo,
+                )
+                video_parts = clip_Parts_without_speaker(timing_groups, videoclip)
+                remove_and_setting_video_ends(timing_groups, video_parts, final_movie, path_mp4)
+                final = concatenate_All_Clip_Parts(video_parts)
+                try:
+                    pre_mix, _ = save_Final_Video(final, video_path.name, workspace=run_root)
+                    concatenate_Video_And_Background_Sound(pre_mix, instrumental_audio_path, staged)
+                finally:
+                    final.close()
+                    for part in video_parts:
+                        part.close()
+    except FileExistsError as exc:
+        raise SystemExit(f"Could not publish the video because the output already exists: {output}") from exc
+    finally:
+        videoclip.close()
+    print(f"FINAL_OUTPUT={output}", flush=True)
     _emit_stability_metric("video_audio_reconstruction", reconstruction_started)
     _emit_stability_metric("pipeline_total", pipeline_started)
     

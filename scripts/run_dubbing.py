@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from compute_backends.colab_batch import ColabBatchRunner
 from compute_backends.settings import load_compute_settings
+from engine.output_paths import available_mp4_path, publish_mp4
 
 
 def parse_args(argv=None):
@@ -30,7 +31,7 @@ def parse_args(argv=None):
         help="Existing authenticated Colab CLI session",
     )
     parser.add_argument("--remote-project", default=preferences["remote_project"])
-    parser.add_argument("--output", help="Local destination for the returned Colab output")
+    parser.add_argument("--output", help="Destination .mp4 file for the completed video")
     parser.add_argument("--source-language", default="auto")
     parser.add_argument("--target-language", required=True)
     parser.add_argument("--translation-model", default="hymt2-1.8b")
@@ -72,16 +73,27 @@ def main(argv=None):
     if args.compute in ("colab", "modal"):
         if args.compute == "colab" and not args.session:
             raise ValueError("Choose an existing authenticated Colab CLI session with --session.")
-        destination = Path(args.output).expanduser().resolve() if args.output else (
-            ROOT / "vocal-remover" / "final_video" / "final" / video.with_suffix(".mp4").name
+        destination = Path(args.output).expanduser().absolute() if args.output else available_mp4_path(
+            ROOT / "vocal-remover" / "final_video" / "final", video, lip_sync=args.lip_sync,
         )
-        if args.compute == "modal":
-            from compute_backends.modal_batch import run_modal_video
-            return run_modal_video(ROOT, video, destination, options)
-        runner = ColabBatchRunner(
-            args.session, remote_project=args.remote_project, project_root=ROOT,
-        )
-        runner.run(video, destination, options)
+        try:
+            with publish_mp4(destination) as staged:
+                if args.compute == "modal":
+                    from compute_backends.modal_batch import run_modal_video
+                    status = run_modal_video(ROOT, video, staged, options)
+                    if status:
+                        raise subprocess.CalledProcessError(status, "Modal dubbing")
+                else:
+                    runner = ColabBatchRunner(
+                        args.session, remote_project=args.remote_project, project_root=ROOT,
+                    )
+                    runner.run(video, staged, options)
+        except subprocess.CalledProcessError as exc:
+            return exc.returncode
+        except (FileExistsError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"FINAL_OUTPUT={destination}", flush=True)
         return 0
 
     command = [
@@ -92,6 +104,8 @@ def main(argv=None):
         "--translation-device", args.translation_device,
         "--tts-backend", "modal" if args.compute == "modal-tts" else "native",
     ]
+    if args.output:
+        command.extend(["--output", args.output])
     if not args.diarization:
         command.append("--no-diarization")
     for flag, value in (("--num-speakers", args.num_speakers),

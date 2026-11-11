@@ -94,9 +94,8 @@ def _worker(config_path: Path) -> int:
             result = next((line.split("=", 1)[1] for line in normalized.stdout.splitlines() if line.startswith("VDT_INPUT=")), "")
             input_path = _content_path(result)
             args = [str(input_path), *args[1:]]
-            output_path = root / "vocal-remover/final_video/final" / input_path.name
-            if config.get("lip_sync"):
-                output_path = output_path.with_name(output_path.stem + "_lipsync" + output_path.suffix)
+            output_path = status_path.parent / "translated.mp4"
+            args += ["--output", str(output_path)]
             process = subprocess.Popen(
                 [str(python), str(root / "scripts" / "run_pipeline.py"), *args],
                 cwd=root,
@@ -107,7 +106,7 @@ def _worker(config_path: Path) -> int:
                 env=_runtime_environment(root),
             )
             return_code = process.wait()
-        final_path = output_path if output_path.is_file() else None
+        final_path = output_path if return_code == 0 and output_path.is_file() else None
         _write_json(status_path, {
             "state": "finished" if return_code == 0 else "failed",
             "exit_code": return_code,

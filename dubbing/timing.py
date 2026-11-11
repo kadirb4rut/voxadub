@@ -124,7 +124,9 @@ def _join_text(segments: Sequence[SpeechSegment]) -> str:
     return " ".join(segment.text.strip() for segment in segments).strip()
 
 
-def _can_merge(previous: SpeechSegment, current: SpeechSegment, config: TimingGroupConfig) -> bool:
+def _can_merge(
+    first: SpeechSegment, previous: SpeechSegment, current: SpeechSegment, config: TimingGroupConfig
+) -> bool:
     if previous.speaker is None or current.speaker is None:
         return False
     if previous.speaker != current.speaker:
@@ -136,7 +138,7 @@ def _can_merge(previous: SpeechSegment, current: SpeechSegment, config: TimingGr
     gap = current.start - previous.end
     if gap < 0 or gap > config.max_gap_seconds:
         return False
-    combined_duration = current.end - previous.start
+    combined_duration = current.end - first.start
     if combined_duration > config.max_group_duration_seconds:
         return False
     return (
@@ -161,7 +163,7 @@ def build_timing_groups(
         return []
     groups: list[list[SpeechSegment]] = []
     for segment in segments:
-        if groups and _can_merge(groups[-1][-1], segment, config):
+        if groups and _can_merge(groups[-1][0], groups[-1][-1], segment, config):
             groups[-1].append(segment)
         else:
             groups.append([segment])

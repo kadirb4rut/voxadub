@@ -7,6 +7,8 @@ from dubbing.segments import SpeechSegment
 
 MIN_ASSIGNMENT_EVIDENCE_SECONDS = 0.35
 MIN_DOMINANT_OVERLAP_FRACTION = 0.60
+MIN_SHORT_SEGMENT_COVERAGE = 0.90
+MAX_BOUNDARY_JITTER_SECONDS = 0.05
 SHORT_SPEAKER_TOTAL_SECONDS = 0.75
 SHORT_SPEAKER_TURN_SECONDS = 0.35
 
@@ -76,12 +78,37 @@ def validate_speaker_bounds(
 def _overlap_totals(
     segment: SpeechSegment, turns: Iterable[DiarizationTurn]
 ) -> dict[str, float]:
-    totals: dict[str, float] = {}
+    intervals: dict[str, list[tuple[float, float]]] = {}
     for turn in turns:
-        seconds = interval_overlap(segment.start, segment.end, turn.start, turn.end)
-        if seconds > 0:
-            totals[turn.speaker] = totals.get(turn.speaker, 0.0) + seconds
+        start, end = max(segment.start, turn.start), min(segment.end, turn.end)
+        if start < end:
+            intervals.setdefault(turn.speaker, []).append((start, end))
+    totals = {}
+    for speaker, spans in intervals.items():
+        seconds, covered_end = 0.0, segment.start
+        for start, end in sorted(spans):
+            seconds += max(0.0, end - max(start, covered_end))
+            covered_end = max(end, covered_end)
+        totals[speaker] = seconds
     return totals
+
+
+def _has_short_segment_context(
+    segment: SpeechSegment, label: str, turns: Sequence[DiarizationTurn]
+) -> bool:
+    """Require a sustained regular turn at the fragment, with no competing label."""
+    relevant = [
+        turn for turn in turns
+        if interval_overlap(segment.start, segment.end, turn.start, turn.end) > 1e-6
+    ]
+    if any(turn.speaker != label for turn in relevant):
+        return False
+    return any(
+        turn.end - turn.start >= MIN_ASSIGNMENT_EVIDENCE_SECONDS
+        and interval_overlap(segment.start, segment.end, turn.start, turn.end)
+        >= MIN_SHORT_SEGMENT_COVERAGE * segment.duration
+        for turn in relevant
+    )
 
 
 def _has_cross_speaker_overlap(
@@ -135,11 +162,28 @@ def assign_speakers(
         second_seconds = ranked[1][1] if len(ranked) > 1 else 0.0
         total_evidence = sum(totals.values())
         dominance = best_seconds / total_evidence if total_evidence else 0.0
-        ambiguous = (
-            best_seconds < MIN_ASSIGNMENT_EVIDENCE_SECONDS
-            or dominance < MIN_DOMINANT_OVERLAP_FRACTION
-            or abs(best_seconds - second_seconds) < 1e-6
-        )
+        if segment.duration < MIN_ASSIGNMENT_EVIDENCE_SECONDS:
+            ambiguous = (
+                overlap
+                or second_seconds > 1e-6
+                or best_seconds < MIN_SHORT_SEGMENT_COVERAGE * segment.duration
+                or not _has_short_segment_context(segment, best_label, result.turns)
+            )
+        else:
+            regular_competition = max(
+                (seconds for label, seconds in _overlap_totals(segment, result.turns).items()
+                 if label != best_label),
+                default=0.0,
+            )
+            ambiguous = (
+                best_seconds < MIN_ASSIGNMENT_EVIDENCE_SECONDS
+                or best_seconds < MIN_DOMINANT_OVERLAP_FRACTION * segment.duration
+                or dominance < MIN_DOMINANT_OVERLAP_FRACTION
+                or abs(best_seconds - second_seconds) < 1e-6
+                or (overlap and not result.exclusive_turns)
+                or second_seconds > MAX_BOUNDARY_JITTER_SECONDS
+                or (not overlap and regular_competition > MAX_BOUNDARY_JITTER_SECONDS)
+            )
         speaker = None if ambiguous else speaker_map.get(best_label, best_label)
         assigned.append(
             segment.with_speaker(speaker, overlap=overlap, ambiguous=ambiguous)
