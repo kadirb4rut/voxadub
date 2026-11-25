@@ -11,6 +11,7 @@ Local-first offline dubbing · Experimental live broadcast dubbing
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/Code-MIT-green.svg)](LICENSE)
 [![VoxCPM2: Apache 2.0](https://img.shields.io/badge/VoxCPM2-Apache--2.0-blue.svg)](https://huggingface.co/openbmb/VoxCPM2)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-VoxaDub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/kadirb4rut)
 
 🌟 Listed in [OpenBMB/VoxCPM](https://github.com/OpenBMB/VoxCPM) — **Ecosystem & Community** · [PR #389](https://github.com/OpenBMB/VoxCPM/pull/389)
 
@@ -342,6 +343,35 @@ voxcpm_runtime.py                   pinned VoxCPM2 adapter
 vocal-remover/                      vendored upstream MIT snapshot
 tests/                              logic, protocol and browser-extension tests
 ```
+
+## ❤️ Support VoxaDub
+
+VoxaDub is an independent, open-source project. If you find it useful or believe in making local-first AI dubbing more accessible, consider supporting its development.
+
+Your sponsorship helps fund:
+
+- GPU computing resources and AI model experimentation.
+- New features and performance improvements.
+- Testing, documentation, and long-term maintenance.
+- Continued development of offline and experimental live dubbing.
+
+Both one-time and monthly contributions are welcome, starting at **$1**.
+
+VoxaDub's original project code remains free and open source under the MIT License.
+
+### Become a Sponsor
+
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-Support%20VoxaDub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/kadirb4rut)
+
+### Our Sponsors
+
+A special thank you to everyone who supports the development of VoxaDub.
+
+Eligible sponsors can have their name or company logo featured here, with their permission.
+
+Whether you sponsor the project, contribute code, report an issue, or simply give it a star, your support is greatly appreciated.
+
+Thank you! ❤️
 
 ## Contributing
 
